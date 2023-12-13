@@ -1,0 +1,161 @@
+---
+title: "Analysis"
+output: html_document
+date: "2023-12-13"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Load library
+
+```{r}
+library(tidyverse)
+library(lme4)
+library(ggbeeswarm)
+library(brms)
+options(brms.backend = "cmdstanr")
+```
+
+## Read in participant data
+
+```{r}
+df.subj.aug <- read_csv("../data/participants_aug2023.csv")
+df.subj.dec <- read_csv("../data/participants_dec2023.csv")
+
+df.subj <- bind_rows(df.subj.aug, df.subj.dec) %>%
+  group_by(sonaID) %>%
+  summarize(across(everything(), last))  # only keep the lastest entry
+
+head(df.subj)
+```
+
+
+## Read in duration data
+
+```{r}
+df.dur <- read_csv("../data/audio_duration_CVenvironment.csv") %>%
+  mutate(Filename = str_sub(Filename, end = -5))
+df.dur
+```
+
+## Read in experiment data
+- Trial exclusion criteria:
+  - Trials without responses
+  - Trials whose RT is shorter than stimulus duration
+  - Trials whose log(RT) is >= 2 standard devations within each participant+talker group
+
+- Participant exclusion criteria:
+  - Participants with SLH == yes
+  - Participants who don't speak English natively
+  - Participants whose AoA for English is > 5
+  - Participants whose valid trials are < 75% of total trials
+
+```{r}
+df.raw <- read_csv("../data/fric.categorization.df.csv") %>%
+  left_join(x = ., y = df.subj, by = c("id" = "sonaID")) %>%
+  
+  # only include participants whose English is native and age of acquisition is <= 5
+  filter(SLH == 'No', EnglishNative == 'Yes', EN_AOA <= 5) %>%
+  dplyr::select(-word, -CategorizeWhat) %>%
+  mutate(filename = str_sub(filename, end = -5)) %>%
+  left_join(x = ., y = df.dur, by = c("filename" = "Filename")) %>%
+  mutate(
+    TYPE = if_else(CategoryLabel %in% c("S", "SH"), "C", "CV"),
+    CONS = str_extract(CategoryLabel, "(SH|S)"),
+    CORRECT = Response == CONS,
+    
+    # trials without response will not be kept
+    KEPT = if_else(is.na(Response), 0, 1),
+    Duration = Duration * 1000,
+    
+    # trials whose RT is shorter than the stimulus duration will not be kept
+    KEPT = if_else(KEPT == 1, if_else(Duration <= RT, 1, 0), 0),
+    LOG_RT = if_else(KEPT == 1, log(RT), NA)
+  ) %>%
+  dplyr::select(-CategoryLabel) %>%
+  group_by(id, talker) %>%
+  mutate(
+    SE = abs((LOG_RT - mean(LOG_RT, na.rm = TRUE)) / sd(LOG_RT, na.rm = TRUE)),
+    
+    # trials with standard error >= 2 will not be kept
+    KEPT = if_else(KEPT == 1, if_else(SE >= 2, 0, 1), 0),
+    
+    # removed participants of whom more than 75% of trials are not valid
+    KEPT = if_else(id %in% c(38371, 38689, 38677, 38644, 38038, 37966, 35083, 37948, 38686, 36430), 0, KEPT)
+  )
+
+head(df.raw)
+
+df.raw %>% write_csv(file = "../data/raw.csv")
+df.raw <- read_csv("../data/raw.csv")
+```
+
+## Visualization
+
+```{r}
+# by-talker production distance
+# mean (SD)
+# 159: 13.07 (1.99)
+# 2470: 11.63 (1.16)
+# 115: 10.58 (1.06)
+# 2471: 2.65 (0.38)
+# 2453: 2.49 (0.36)
+# 2436: 1.99 (0.31)
+
+df.raw %>%
+  filter(KEPT == 1) %>%
+  mutate(talker = as.factor(talker),
+         talker = fct_relevel(talker, "159", "2470", "115", "2471", "2453", "2436")) %>%
+  group_by(talker, TYPE, id, CONS) %>%
+  summarize(MEAN_CORRECT = mean(CORRECT)) %>%
+  ggplot(aes(x = as.factor(talker), y = MEAN_CORRECT)) +
+  theme_bw() +
+  geom_boxplot() +
+  geom_jitter(width = 0.1, alpha = 0.5) +
+  facet_grid(CONS ~ TYPE)
+```
+
+```{r}
+df.raw %>%
+  filter(KEPT == 1) %>%
+  mutate(talker = as.factor(talker),
+         talker = fct_relevel(talker, "159", "2470", "115", "2471", "2453", "2436")) %>%
+  ggplot(aes(x = as.factor(talker), y = RT)) +
+  theme_bw() +
+  geom_violin() +
+  facet_grid(CONS ~ TYPE)
+```
+
+## Stats analysis
+
+```{r}
+df.full <- df.raw %>%
+  filter(KEPT == 1) %>%
+  mutate(
+    talker = as.factor(talker),
+    
+    # using 2471 as the ref level because this talker has the lowest accuracy
+    talker = fct_relevel(talker, "2471")
+  )
+
+# TODO: look into divergent transitions with more complex models
+# use a very simple random structure here because more complex ones led to divergent transitions
+# use default priors for now
+# m_acc <- brm(formula = CORRECT ~ TYPE * CONS * talker + (1 | id) + (1 | word), data = df.full,
+#              family = bernoulli(link = "logit"), chains = 4, cores = 4)
+# 
+# saveRDS(m_acc, "../model/m.acc.random.intercept.rds")
+m_acc <- readRDS("../model/m.acc.random.intercept.rds")
+summary(m_acc)
+```
+
+```{r}
+# m_RT <- brm(formula = LOG_RT ~ TYPE * CONS * talker + (1 | id) + (1 | word), data = df.full,
+#             chains = 4, cores = 4)
+# 
+# saveRDS(m_RT, "../model/m.rt.random.intercept.rds")
+m_RT <- readRDS("../model/m.rt.random.intercept.rds")
+summary(m_RT)
+```
