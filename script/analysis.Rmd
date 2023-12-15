@@ -37,7 +37,8 @@ head(df.subj)
 ```{r}
 df.dur <- read_csv("../data/audio_duration_CVenvironment.csv") %>%
   mutate(Filename = str_sub(Filename, end = -5))
-df.dur
+
+head(df.dur)
 ```
 
 ## Read in experiment data
@@ -190,17 +191,22 @@ summary(m_acc)
 ```
 
 ```{r}
+m_RT <- brm(formula = LOG_RT ~ TYPE * CONS * talker + (1 + TYPE + CONS + talker | id) + (1 + TYPE + talker | word), data = df.full,
+            chains = 4, cores = 4)
+
 m_RT <- brm(formula = LOG_RT ~ TYPE * CONS * talker + (1 | id) + (1 | word), data = df.full,
             chains = 4, cores = 4)
 
 saveRDS(m_RT, "../model/m.rt.random.intercept.rds")
 m_RT <- readRDS("../model/m.rt.random.intercept.rds")
 summary(m_RT)
+
+pp_check(m_acc)
 ```
 
 ## Imitation data
 ```{r}
-df_latency <- read_delim("../data/praat_estimate_file_onsetlatency_Dec132023.txt", delim = "\t")
+df_latency_raw <- read_delim("../data/praat_estimate_file_onsetlatency_Dec132023.txt", delim = "\t")
 df_gorilla <- read_csv("../data/data_exp_137778-v4_task-9wxo.csv") %>%
   filter(
     `Screen ID` == "nias5i" | 
@@ -214,32 +220,27 @@ df_gorilla <- read_csv("../data/data_exp_137778-v4_task-9wxo.csv") %>%
     FILENAME = if_else(is.na(Response), NA, str_replace_all(str_sub(Response, start = 21, end = -6), "/", "-"))
   )
 
-df_final <- df_latency %>%
+df_latency <- df_latency_raw %>%
   left_join(x = ., y = df_gorilla, by = c("file" = "FILENAME")) %>%
-  rename(TALKER = `Spreadsheet: talker`, WORD = `Spreadsheet: word`,
-         LABEL = `Spreadsheet: label`)
+  rename(TALKER = `Spreadsheet: talker`, WORD = `Spreadsheet: word`, LABEL = `Spreadsheet: label`,
+         ID = `Participant Public ID`, TRIAL_NUM = `Trial Number`, STIMULUS_FILENAME = `Spreadsheet: filename`) %>%
+  left_join(x = ., y = df.subj, by = c("ID" = "sonaID"))
 
-df_final %>%
-  write_csv("../data/onset_latency.csv")
+df_latency %>% write_csv("../data/onset_latency.csv")
 
-included <- df_latency %>% group_by(file) %>% count() %>% filter(n == 1) %>% pull(file)
+included <- df_latency_raw %>% group_by(file) %>% count() %>% filter(n == 1) %>% pull(file)
 
-df_onset_latency <- df_final %>%
-  filter(!is.na(`Trial Number`), file %in% included, duration > 0) %>%
+df_onset_latency <- df_latency %>%
+  filter(!is.na(TRIAL_NUM), file %in% included, duration > 0, EnglishNative == "Yes", SLH == "No", EN_AOA <= 5) %>%
   rowwise() %>%
   mutate(
-    CONS = str_split(`Spreadsheet: filename`, "_")[[1]][3]
-  )
-
-df_onset_latency %>%
-  ggplot(aes(x = duration)) +
-  geom_histogram(binwidth = 0.5) +
-  facet_grid(. ~ `Spreadsheet: talker`) +
-  coord_cartesian(xlim = c(0, 5))
+    CONS = str_split(STIMULUS_FILENAME, "_")[[1]][3]
+  ) %>%
+  ungroup()
 
 df_onset_latency %>%
   mutate(LOG_DUR = log(duration)) %>%
-  group_by(`Participant Public ID`, TALKER) %>%
+  group_by(ID, TALKER) %>%
   mutate(
     TALKER = as.factor(TALKER),
     TALKER = fct_relevel(TALKER, "159", "2470", "115", "2471", "2453", "2436"),
@@ -250,29 +251,95 @@ df_onset_latency %>%
   ) %>%
   filter(KEPT == 1) %>%
   ggplot(aes(x = as.factor(TALKER), y = duration)) +
+  theme_bw() +
   geom_violin() +
   facet_grid(. ~ CONS)
 
-df_final %>%
-  group_by(file) %>%
-  count() %>%
-  arrange(desc(n)) %>%
-  print(200)
+df_onset_latency %>%
+  mutate(LOG_DUR = log(duration)) %>%
+  group_by(ID, TALKER) %>%
+  mutate(
+    TALKER = as.factor(TALKER),
+    TALKER = fct_relevel(TALKER, "159", "2470", "115", "2471", "2453", "2436"),
+    SE = abs((LOG_DUR - mean(LOG_DUR, na.rm = TRUE)) / sd(LOG_DUR, na.rm = TRUE)),
+    
+    # trials with standard error >= 2 will not be kept
+    KEPT = if_else(SE >= 2, 0, 1)
+  ) %>%
+  filter(KEPT == 1) %>%
+  ggplot(aes(x = as.factor(TALKER), y = LOG_DUR)) +
+  theme_bw() +
+  geom_violin() +
+  facet_grid(. ~ CONS)
 
-df_final %>%
-  filter(is.na(`Trial Number`))
+df_onset_latency %>%
+  mutate(LOG_DUR = log(duration)) %>%
+  group_by(ID, TALKER) %>%
+  mutate(
+    TALKER = as.factor(TALKER),
+    TALKER = fct_relevel(TALKER, "159", "2470", "115", "2471", "2453", "2436"),
+    SE = abs((LOG_DUR - mean(LOG_DUR, na.rm = TRUE)) / sd(LOG_DUR, na.rm = TRUE)),
+    
+    # trials with standard error >= 2 will not be kept
+    KEPT = if_else(SE >= 2, 0, 1)
+  ) %>%
+  group_by(ID) %>%
+  summarize(PERC = mean(KEPT)) %>%
+  arrange(PERC)
 
-df_latency %>%
-  filter(file == "137778-4-9871787-task-9wxo-33340758-shudder-97-2")
+df_onset_latency <- df_onset_latency %>%
+  mutate(LOG_DUR = log(duration)) %>%
+  group_by(ID, TALKER) %>%
+  mutate(
+    TALKER = as.factor(TALKER),
+    TALKER = fct_relevel(TALKER, "159", "2470", "115", "2471", "2453", "2436"),
+    SE = abs((LOG_DUR - mean(LOG_DUR, na.rm = TRUE)) / sd(LOG_DUR, na.rm = TRUE)),
+    
+    # trials with standard error >= 2 will not be kept
+    KEPT = if_else(SE >= 2, 0, 1)
+  ) %>%
+  filter(KEPT == 1)
 
-df_gorilla %>%
-  filter(grepl("137778-4-9753486-task-9wxo-32936175-show", FILENAME))
+(mat <- matrix(
+  data = c(1/6, 1/6, 1/6,  1/6,  1/6,  1/6,
+           1/3, 1/3, 1/3, -1/3, -1/3, -1/3,
+           0,     0,   1,   -1,    0,    0,
+           0,     0,   0,    1,   -1,    0,
+           0,     0,   0,    0,    1,   -1,
+           1,     0,   0,    0,    0,   -1),
+  nrow = 6))
+(mymat <- solve(t(mat)))
+(my.contrasts <- mymat[, 2:6])
+(contrasts(df_onset_latency$TALKER) <- my.contrasts)
 
-df_latency %>%
-  group_by(file) %>%
-  count() %>%
-  filter(n > 1)
+get_prior(
+  LOG_DUR ~ CONS * TALKER + (1 + CONS + TALKER | ID) + (1 + TALKER | WORD),
+  data = df_onset_latency
+)
 
-#45,090
-#5,150
+my_priors <- c(
+  prior(normal(0, 1), class = Intercept),
+  prior(normal(0, 1), class = b),
+  prior(exponential(1), class = sigma),
+  prior(exponential(1), class = sd),
+  prior(lkj(2), class = cor)
+)
+
+m <- brm(formula = CORRECT ~ COMP_TYPE + (1 + COMP_TYPE | ID) + (1 | TRIAL),
+         data = df.diff,
+         family = bernoulli(link = "logit"),
+         prior = my_priors,
+         chains = 4,
+         cores = 4,
+         seed = 2023)
+
+m_onset <- brm(
+  formula = LOG_DUR ~ CONS * TALKER + (1 + CONS + TALKER | ID) + (1 + TALKER | WORD),
+  data = df_onset_latency,
+  prior = my_priors,
+  chains = 4, cores = 4,
+  seed = 42
+)
+
+summary(m_onset)
 ```
