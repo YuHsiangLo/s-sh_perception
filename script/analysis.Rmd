@@ -165,19 +165,12 @@ my_priors <- c(
   prior(lkj(2), class = cor)
 )
 
-m <- brm(formula = CORRECT ~ COMP_TYPE + (1 + COMP_TYPE | ID) + (1 | TRIAL),
-         data = df.diff,
-         family = bernoulli(link = "logit"),
-         prior = my_priors,
-         chains = 4,
-         cores = 4,
-         seed = 2023)
-
 m_acc <- brm(formula = CORRECT ~ TYPE * CONS * talker + (1 + TYPE + CONS + talker | id) + (1 + TYPE + talker | word),
              data = df.full,
              family = bernoulli(link = "logit"),
              prior = my_priors,
              chains = 4, cores = 4,
+             control = list(adapt_delta = 0.99, stepsize = 0.5, max_treedepth = 15),
              seed = 42)
 
 saveRDS(m_acc, "../model/m.acc.random.no.interaction.rds")
